@@ -1,4 +1,4 @@
-import os
+wwbAGBaqnc os
 import json
 import shutil
 import zipfile
@@ -9,7 +9,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, 
 # ================= إعدادات البوت =================
 API_ID = 24217199  # ضع الـ API_ID الخاص بك هنا
 API_HASH = "11c12a66dbd23da592211771db1bce6b"  # ضع الـ API_HASH هنا
-BOT_TOKEN = "8676222091:AAF8Xoyji8c-TsDeQnYNep8W9wwbAGBaqnc"  # ضع توكن البوت هنا
+BOT_TOKEN = "8849723725:AAE-bq0S4D7iPg3Cq9mQWVU99iFWkI_qxmg"  # ضع توكن البوت هنا
 ADMIN_ID = 7532687479  # ضع آيدي المطور (الآيدي الخاص بك) هنا
 
 app = Client("HostingManager", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
