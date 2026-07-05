@@ -39,7 +39,7 @@ running_bots = {}
 
 def get_user_limit(user_id):
     if user_id == ADMIN_ID:
-        return 999  # المطور عدد لا نهائي
+        return 999  
     db = load_db()
     uid = str(user_id)
     if uid not in db["users"]:
@@ -48,7 +48,6 @@ def get_user_limit(user_id):
     return db["users"][uid]
 
 def get_active_slots(user_id):
-    """جلب أرقام التنصيبات النشطة للمستخدم"""
     base_dir = f"hostings/{user_id}"
     if not os.path.exists(base_dir): return []
     slots = []
@@ -58,19 +57,16 @@ def get_active_slots(user_id):
     return sorted(slots)
 
 def find_main_script(bot_dir):
-    """البحث عن ملف بايثون أو PHP"""
     for root, dirs, files in os.walk(bot_dir):
         if "main.py" in files: return os.path.join(root, "main.py")
         if "index.php" in files: return os.path.join(root, "index.php")
         if "main.php" in files: return os.path.join(root, "main.php")
-        
         for file in files:
             if file.endswith(".py") or file.endswith(".php"):
                 return os.path.join(root, file)
     return None
 
 def auto_install_requirements(bot_dir, script_path, is_python):
-    """تثبيت المتطلبات حتى لو لم يكن هناك ملف requirements"""
     req_file = os.path.join(os.path.dirname(script_path), "requirements.txt")
     if not os.path.exists(req_file):
         req_file = os.path.join(bot_dir, "requirements.txt")
@@ -79,7 +75,6 @@ def auto_install_requirements(bot_dir, script_path, is_python):
         if os.path.exists(req_file):
             subprocess.run(["pip", "install", "-r", req_file])
         else:
-            # اكتشاف تلقائي للمكتبات من خلال قراءة كود البايثون
             try:
                 with open(script_path, "r", encoding="utf-8") as f:
                     content = f.read()
@@ -95,13 +90,11 @@ def auto_install_requirements(bot_dir, script_path, is_python):
             except:
                 pass
     else:
-        # إذا كان PHP، نبحث عن composer
         composer_file = os.path.join(os.path.dirname(script_path), "composer.json")
         if os.path.exists(composer_file):
             subprocess.run(["composer", "install"], cwd=os.path.dirname(script_path))
 
 async def check_disk_space(client):
-    """التحقق من مساحة السيرفر"""
     total, used, free = shutil.disk_usage("/")
     percent = (used / total) * 100
     if percent >= 85:
@@ -140,9 +133,9 @@ def admin_users_menu():
 async def start_command(client: Client, message: Message):
     db = load_db()
     if str(message.from_user.id) in db.get("banned", []):
-        return await message.reply("أنت محظور.")
+        return await message.reply("أنت محظور من الاستخدام.")
     
-    user_states[message.from_user.id] = None
+    user_states[message.from_user.id] = {"step": None}
     await message.reply("أهلاً بك. اختر من القائمة أدناه:", reply_markup=main_menu(message.from_user.id))
 
 @app.on_message(filters.text & filters.private)
@@ -150,14 +143,90 @@ async def handle_texts(client: Client, message: Message):
     user_id = message.from_user.id
     text = message.text
     db = load_db()
-    state = user_states.get(user_id, {}) or {}
 
-    # === زر الرجوع ===
+    # تهيئة حالة المستخدم لو مش موجودة
+    if user_id not in user_states or user_states[user_id] is None:
+        user_states[user_id] = {"step": None}
+        
+    state = user_states[user_id]
+    step = state.get("step")
+
+    # === زر الرجوع (يفك أي خطوة ويرجع للرئيسية) ===
     if text == "رجوع":
-        user_states[user_id] = None
+        user_states[user_id] = {"step": None}
         return await message.reply("تم الرجوع للرئيسية.", reply_markup=main_menu(user_id))
 
-    # ================= القائمة الرئيسية =================
+    # ================= 1. استقبال الإدخالات (الخطوات المنتظرة) =================
+
+    if step == "WAITING_INPUT":
+        slot = state.get("selected_slot")
+        process_key = f"{user_id}_{slot}"
+        
+        # تنظيف الإدخال
+        cleaned = text.replace(" ", "") if ":" in text else text.translate(str.maketrans("", "", " +-()"))
+        
+        if process_key in running_bots and running_bots[process_key].poll() is None:
+            try:
+                running_bots[process_key].stdin.write(f"{cleaned}\n".encode('utf-8'))
+                running_bots[process_key].stdin.flush()
+                await message.reply("✅ تم الإدخال بنجاح.")
+            except:
+                await message.reply("❌ خطأ أثناء الإدخال.")
+        else:
+            await message.reply("⚠️ عذراً، البوت لا يعمل لكي يستقبل بيانات.")
+            
+        # نرجع نصفر الخطوة عشان ميفضلش يعلق بس نحتفظ برقم التنصيب عشان لو حب يشوف السجل!
+        state["step"] = None 
+        return
+
+    if step == "WAITING_SLOT_DELETE" and text.isdigit():
+        slot = int(text)
+        shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
+        if f"{user_id}_{slot}" in running_bots:
+            running_bots[f"{user_id}_{slot}"].terminate()
+            del running_bots[f"{user_id}_{slot}"]
+        state["step"] = None
+        return await message.reply("✅ تم الحذف بنجاح.", reply_markup=main_menu(user_id))
+
+    if step == "WAITING_SLOT_MANAGE" and text.isdigit():
+        state["selected_slot"] = int(text)
+        state["step"] = None
+        return await message.reply(f"✅ تم الدخول لإدارة التنصيب رقم ({text}). اختر الإجراء:", reply_markup=manage_menu())
+
+    # --- خطوات المطور ---
+    if step == "ADMIN_WAITING_USER_ID" and text.isdigit():
+        target_id = int(text)
+        slots = get_active_slots(target_id)
+        if not slots:
+            state["step"] = None
+            return await message.reply("العضو ليس لديه تنصيبات.")
+        elif len(slots) == 1:
+            await execute_admin_user_action(message, state["action"], target_id, slots[0])
+            state["step"] = None
+            return
+        else:
+            state["step"] = "ADMIN_WAITING_USER_SLOT"
+            state["target"] = target_id
+            return await message.reply("العضو لديه أكثر من تنصيب، أدخل الرقم الذي تريد التحكم به:")
+
+    if step == "ADMIN_WAITING_USER_SLOT" and text.isdigit():
+        await execute_admin_user_action(message, state["action"], state["target"], int(text))
+        state["step"] = None
+        return
+
+    if step == "ADMIN_UNBAN_ID" and text.isdigit():
+        if str(text) in db["banned"]: db["banned"].remove(str(text))
+        save_db(db)
+        state["step"] = None
+        return await message.reply("✅ تم فك الحظر.")
+
+    if step == "ADMIN_ADD_LIMIT" and text.isdigit():
+        db["users"][str(text)] = db["users"].get(str(text), 2) + 1
+        save_db(db)
+        state["step"] = None
+        return await message.reply("✅ تم تزويد عدد التنصيبات المسموحة لهذا العضو.")
+
+    # ================= 2. الأزرار الثابتة =================
 
     if text == "تنصيب بوت":
         await check_disk_space(client)
@@ -169,74 +238,75 @@ async def handle_texts(client: Client, message: Message):
         slots = get_active_slots(user_id)
         
         if len(slots) >= limit:
-            return await message.reply("وصلت للحد الأقصى للتنصيبات.")
+            return await message.reply("❌ وصلت للحد الأقصى للتنصيبات المسموح بها.")
             
         available_slot = next((i for i in range(1, limit + 2) if i not in slots), 1)
-        user_states[user_id] = {"step": "WAITING_FOR_ZIP", "slot": available_slot}
-        await message.reply("أرسل ملف البوت المضغوط (.zip) الآن:")
+        state["step"] = "WAITING_FOR_ZIP"
+        state["slot"] = available_slot
+        return await message.reply("أرسل ملف البوت المضغوط (.zip) الآن:")
 
     elif text == "حذف تنصيب":
         slots = get_active_slots(user_id)
         if not slots:
             return await message.reply("لا يوجد لديك تنصيبات لحذفها.")
         elif len(slots) == 1:
-            # الحذف المباشر (ذكي)
+            # حذف مباشر
             slot = slots[0]
             process_key = f"{user_id}_{slot}"
             if process_key in running_bots:
                 running_bots[process_key].terminate()
                 del running_bots[process_key]
             shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
-            await message.reply("تم حذف التنصيب بنجاح.")
+            return await message.reply("✅ تم حذف التنصيب بنجاح.")
         else:
-            user_states[user_id] = {"step": "WAITING_SLOT_DELETE"}
-            await message.reply("لديك أكثر من تنصيب، أدخل الرقم:")
+            state["step"] = "WAITING_SLOT_DELETE"
+            return await message.reply("لديك أكثر من تنصيب، أدخل الرقم الذي تريد حذفه (1 أو 2 مثلاً):")
 
     elif text in ["قسم الإدارة", "إدارة بوتك"]:
         slots = get_active_slots(user_id)
         if not slots:
-            return await message.reply("لا يوجد تنصيبات لإدارتها.")
+            return await message.reply("لا يوجد تنصيبات حالياً لإدارتها.")
         elif len(slots) == 1:
-            user_states[user_id] = {"selected_slot": slots[0]}
-            await message.reply(f"تم اختيار التنصيب ({slots[0]}). اختر الإجراء:", reply_markup=manage_menu())
+            state["selected_slot"] = slots[0]
+            return await message.reply(f"تم اختيار التنصيب التلقائي ({slots[0]}). اختر الإجراء:", reply_markup=manage_menu())
         else:
-            user_states[user_id] = {"step": "WAITING_SLOT_MANAGE"}
-            await message.reply("أدخل رقم التنصيب الذي تريد إدارته:")
+            state["step"] = "WAITING_SLOT_MANAGE"
+            return await message.reply("لديك أكثر من تنصيب. أدخل رقم التنصيب الذي تريد إدارته (1 أو 2 مثلاً):")
 
-    # ================= أزرار التحكم بالمطور (الخاصة بالأعضاء) =================
+    # ================= 3. أزرار التحكم بالمطور (الخاصة بالأعضاء) =================
 
     elif text == "إدارة بوتات الأعضاء" and user_id == ADMIN_ID:
-        await message.reply("إدارة الأعضاء:", reply_markup=admin_users_menu())
+        return await message.reply("إدارة الأعضاء:", reply_markup=admin_users_menu())
 
     elif text in ["حذف تنصيب عضو", "إيقاف مؤقت لعضو", "تشغيل لعضو"] and user_id == ADMIN_ID:
-        user_states[user_id] = {"step": "ADMIN_WAITING_USER_ID", "action": text}
-        await message.reply("أدخل آيدي العضو:")
+        state["step"] = "ADMIN_WAITING_USER_ID"
+        state["action"] = text
+        return await message.reply("أدخل الآيدي (ID) الخاص بالعضو:")
 
     elif text == "فك حظر" and user_id == ADMIN_ID:
-        user_states[user_id] = {"step": "ADMIN_UNBAN_ID"}
-        await message.reply("أدخل الآيدي:")
+        state["step"] = "ADMIN_UNBAN_ID"
+        return await message.reply("أدخل الآيدي لفك الحظر:")
 
     elif text == "زيادة تنصيب" and user_id == ADMIN_ID:
-        user_states[user_id] = {"step": "ADMIN_ADD_LIMIT"}
-        await message.reply("أدخل الآيدي:")
+        state["step"] = "ADMIN_ADD_LIMIT"
+        return await message.reply("أدخل الآيدي لزيادة حد التنصيبات له:")
 
     elif text == "قفل التنصيب" and user_id == ADMIN_ID:
         db["locked"] = True
         save_db(db)
-        await message.reply("تم قفل التنصيب للجميع.")
+        return await message.reply("🔒 تم قفل التنصيب على الجميع (باستثناء المطور).")
 
     elif text == "تشغيل التنصيب" and user_id == ADMIN_ID:
         db["locked"] = False
         save_db(db)
-        await message.reply("تم فتح التنصيب للجميع.")
+        return await message.reply("🔓 تم فتح التنصيب للجميع.")
 
-
-    # ================= قسم إدارة التنصيب (بعد اختيار الرقم) =================
+    # ================= 4. أزرار قسم الإدارة (بعد تحديد الرقم) =================
 
     elif text in ["سجل البوت", "حالة البوت", "إيقاف مؤقت", "تشغيل البوت", "⌨️ إدخال بيانات"]:
         slot = state.get("selected_slot")
         if not slot:
-            return await message.reply("يرجى اختيار قسم الإدارة أولاً.", reply_markup=main_menu(user_id))
+            return await message.reply("يرجى الدخول لقسم الإدارة أولاً لتحديد التنصيب.", reply_markup=main_menu(user_id))
             
         process_key = f"{user_id}_{slot}"
         user_dir = f"hostings/{user_id}/slot_{slot}"
@@ -246,23 +316,23 @@ async def handle_texts(client: Client, message: Message):
             if os.path.exists(log_path):
                 with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
                     log_text = "".join(f.readlines()[-50:])
-                await message.reply(f"**سجل ({slot}):**\n```\n{log_text[-4000:]}\n```")
+                return await message.reply(f"**سجل التنصيب ({slot}):**\n```\n{log_text[-4000:]}\n```")
             else:
-                await message.reply("لا يوجد سجل.")
+                return await message.reply("لا يوجد سجل حتى الآن.")
 
         elif text == "حالة البوت":
             if process_key in running_bots and running_bots[process_key].poll() is None:
-                await message.reply("الحالة: يعمل 🟢")
+                return await message.reply("الحالة: يعمل 🟢")
             else:
-                await message.reply("الحالة: متوقف ⚪")
+                return await message.reply("الحالة: متوقف ⚪")
 
         elif text == "إيقاف مؤقت":
             if process_key in running_bots:
                 running_bots[process_key].terminate()
                 del running_bots[process_key]
-                await message.reply("تم الإيقاف المؤقت.")
+                return await message.reply("تم الإيقاف المؤقت بنجاح.")
             else:
-                await message.reply("البوت متوقف بالفعل.")
+                return await message.reply("البوت متوقف بالفعل.")
 
         elif text == "تشغيل البوت":
             script_path = find_main_script(f"{user_dir}/bot")
@@ -272,82 +342,19 @@ async def handle_texts(client: Client, message: Message):
                 log_file = open(f"{user_dir}/log.txt", "a")
                 p = subprocess.Popen([cmd, os.path.basename(script_path)], cwd=os.path.dirname(script_path), stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT)
                 running_bots[process_key] = p
-                await message.reply("تم إعادة التشغيل.")
+                return await message.reply("تم إعادة التشغيل بنجاح.")
             else:
-                await message.reply("لم يتم العثور على ملفات للتشغيل.")
+                return await message.reply("لم يتم العثور على ملفات للتشغيل.")
 
         elif text == "⌨️ إدخال بيانات":
             if process_key in running_bots and running_bots[process_key].poll() is None:
-                user_states[user_id]["step"] = "WAITING_INPUT"
-                await message.reply("أدخل القيمة:")
+                state["step"] = "WAITING_INPUT"
+                return await message.reply("أدخل القيمة الآن (رقم أو نص):")
             else:
-                await message.reply("عذراً، البوت لا يعمل لإدخال البيانات.")
+                return await message.reply("عذراً، البوت متوقف، لا يمكن إرسال بيانات له.")
 
-
-    # ================= استقبال النصوص والخطوات =================
-
-    step = state.get("step")
-
-    if step == "WAITING_SLOT_DELETE" and text.isdigit():
-        slot = int(text)
-        shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
-        if f"{user_id}_{slot}" in running_bots:
-            running_bots[f"{user_id}_{slot}"].terminate()
-            del running_bots[f"{user_id}_{slot}"]
-        await message.reply("تم الحذف.", reply_markup=main_menu(user_id))
-        user_states[user_id] = None
-
-    elif step == "WAITING_SLOT_MANAGE" and text.isdigit():
-        user_states[user_id] = {"selected_slot": int(text)}
-        await message.reply(f"تم الدخول للتنصيب ({text}).", reply_markup=manage_menu())
-
-    elif step == "WAITING_INPUT" and text:
-        slot = state.get("selected_slot")
-        process_key = f"{user_id}_{slot}"
-        cleaned = text.replace(" ", "") if ":" in text else text.translate(str.maketrans("", "", " +-()"))
-        
-        if process_key in running_bots and running_bots[process_key].poll() is None:
-            try:
-                running_bots[process_key].stdin.write(f"{cleaned}\n".encode('utf-8'))
-                running_bots[process_key].stdin.flush()
-                await message.reply("تم الإدخال بنجاح.")
-            except:
-                await message.reply("خطأ في الإدخال.")
-        user_states[user_id]["step"] = None # الرجوع لحالة الإدارة العادية
-
-    # --- المطور ---
-    elif step == "ADMIN_WAITING_USER_ID" and text.isdigit():
-        target_id = int(text)
-        slots = get_active_slots(target_id)
-        if not slots:
-            await message.reply("العضو ليس لديه تنصيبات.")
-            user_states[user_id] = None
-        elif len(slots) == 1:
-            # التنفيذ المباشر لو عنده تنصيب واحد
-            await execute_admin_user_action(message, state["action"], target_id, slots[0])
-            user_states[user_id] = None
-        else:
-            user_states[user_id] = {"step": "ADMIN_WAITING_USER_SLOT", "action": state["action"], "target": target_id}
-            await message.reply("العضو لديه أكثر من تنصيب، أدخل الرقم:")
-
-    elif step == "ADMIN_WAITING_USER_SLOT" and text.isdigit():
-        await execute_admin_user_action(message, state["action"], state["target"], int(text))
-        user_states[user_id] = None
-
-    elif step == "ADMIN_UNBAN_ID" and text.isdigit():
-        if str(text) in db["banned"]: db["banned"].remove(str(text))
-        save_db(db)
-        await message.reply("تم فك الحظر.")
-        user_states[user_id] = None
-
-    elif step == "ADMIN_ADD_LIMIT" and text.isdigit():
-        db["users"][str(text)] = db["users"].get(str(text), 2) + 1
-        save_db(db)
-        await message.reply("تمت الزيادة.")
-        user_states[user_id] = None
 
 async def execute_admin_user_action(message, action, target_id, slot):
-    """دالة مساعدة لتنفيذ إجراءات المطور على الأعضاء بذكاء"""
     process_key = f"{target_id}_{slot}"
     user_dir = f"hostings/{target_id}/slot_{slot}"
     
@@ -356,15 +363,15 @@ async def execute_admin_user_action(message, action, target_id, slot):
             running_bots[process_key].terminate()
             del running_bots[process_key]
         shutil.rmtree(user_dir, ignore_errors=True)
-        await message.reply(f"تم حذف التنصيب ({slot}) للعضو.")
+        await message.reply(f"تم حذف التنصيب ({slot}) للعضو بنجاح.")
         
     elif action == "إيقاف مؤقت لعضو":
         if process_key in running_bots:
             running_bots[process_key].terminate()
             del running_bots[process_key]
-            await message.reply("تم الإيقاف.")
+            await message.reply(f"تم إيقاف التنصيب ({slot}) للعضو.")
         else:
-            await message.reply("متوقف بالفعل.")
+            await message.reply("التنصيب متوقف بالفعل.")
             
     elif action == "تشغيل لعضو":
         script_path = find_main_script(f"{user_dir}/bot")
@@ -372,8 +379,7 @@ async def execute_admin_user_action(message, action, target_id, slot):
             cmd = "python3" if script_path.endswith(".py") else "php"
             p = subprocess.Popen([cmd, os.path.basename(script_path)], cwd=os.path.dirname(script_path), stdin=subprocess.PIPE, stdout=open(f"{user_dir}/log.txt", "a"), stderr=subprocess.STDOUT)
             running_bots[process_key] = p
-            await message.reply("تم التشغيل.")
-
+            await message.reply(f"تم تشغيل التنصيب ({slot}) للعضو.")
 
 # ================= رفع الملفات (التنصيب) =================
 
@@ -384,7 +390,7 @@ async def handle_docs(client: Client, message: Message):
     
     if state and state.get("step") == "WAITING_FOR_ZIP" and message.document.file_name.endswith(".zip"):
         slot = state.get("slot")
-        msg = await message.reply("جاري التحميل...")
+        msg = await message.reply("جاري سحب الملفات والتحميل...")
         
         bot_dir = f"hostings/{user_id}/slot_{slot}/bot"
         os.makedirs(bot_dir, exist_ok=True)
@@ -398,13 +404,13 @@ async def handle_docs(client: Client, message: Message):
         script_path = find_main_script(bot_dir)
         if not script_path:
             shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
-            return await msg.edit_text("فشل: لم يتم العثور على ملف py أو php.")
+            user_states[user_id]["step"] = None
+            return await msg.edit_text("فشل: لم يتم العثور على ملف py أو php للتشغيل.")
             
         is_python = script_path.endswith(".py")
         script_name = os.path.basename(script_path)
         script_dir = os.path.dirname(script_path)
         
-        # اكتشاف وتثبيت المتطلبات بذكاء (للبايثون والـ PHP)
         auto_install_requirements(bot_dir, script_path, is_python)
         
         extracted_files = [f for r, d, files in os.walk(bot_dir) for f in files if not f.startswith('.')]
@@ -417,10 +423,10 @@ async def handle_docs(client: Client, message: Message):
         if is_dropper:
             await msg.edit_text("تم استلام ملف سحابي. جاري سحب الملفات، يرجى الانتظار...")
             await asyncio.sleep(6)
-            await message.reply(f"تم التنصيب. (رقم: {slot})", reply_markup=main_menu(user_id))
+            await message.reply(f"✅ تم التنصيب والتشغيل. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
         else:
-            await msg.edit_text(f"تم تنصيب البوت بنجاح. (رقم: {slot})", reply_markup=main_menu(user_id))
+            await msg.edit_text(f"✅ تم تنصيب البوت بنجاح. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
             
-        user_states[user_id] = None
+        user_states[user_id]["step"] = None
 
 app.run()
