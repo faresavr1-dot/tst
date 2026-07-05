@@ -107,6 +107,7 @@ def main_menu(user_id):
     if user_id == ADMIN_ID:
         btns.append([KeyboardButton("إدارة بوتك"), KeyboardButton("إدارة بوتات الأعضاء")])
         btns.append([KeyboardButton("قفل التنصيب"), KeyboardButton("تشغيل التنصيب")])
+        btns.append([KeyboardButton("الإحصائيات والتقرير")])
     else:
         btns.append([KeyboardButton("قسم الإدارة")])
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
@@ -144,14 +145,12 @@ async def handle_texts(client: Client, message: Message):
     text = message.text
     db = load_db()
 
-    # تهيئة حالة المستخدم لو مش موجودة
     if user_id not in user_states or user_states[user_id] is None:
         user_states[user_id] = {"step": None}
         
     state = user_states[user_id]
     step = state.get("step")
 
-    # === زر الرجوع (يفك أي خطوة ويرجع للرئيسية) ===
     if text == "رجوع":
         user_states[user_id] = {"step": None}
         return await message.reply("تم الرجوع للرئيسية.", reply_markup=main_menu(user_id))
@@ -162,7 +161,6 @@ async def handle_texts(client: Client, message: Message):
         slot = state.get("selected_slot")
         process_key = f"{user_id}_{slot}"
         
-        # تنظيف الإدخال
         cleaned = text.replace(" ", "") if ":" in text else text.translate(str.maketrans("", "", " +-()"))
         
         if process_key in running_bots and running_bots[process_key].poll() is None:
@@ -175,7 +173,6 @@ async def handle_texts(client: Client, message: Message):
         else:
             await message.reply("⚠️ عذراً، البوت لا يعمل لكي يستقبل بيانات.")
             
-        # نرجع نصفر الخطوة عشان ميفضلش يعلق بس نحتفظ برقم التنصيب عشان لو حب يشوف السجل!
         state["step"] = None 
         return
 
@@ -243,14 +240,13 @@ async def handle_texts(client: Client, message: Message):
         available_slot = next((i for i in range(1, limit + 2) if i not in slots), 1)
         state["step"] = "WAITING_FOR_ZIP"
         state["slot"] = available_slot
-        return await message.reply("أرسل ملف البوت المضغوط (.zip) الآن:")
+        return await message.reply("أرسل ملف البوت (.zip أو .py أو .php) الآن:")
 
     elif text == "حذف تنصيب":
         slots = get_active_slots(user_id)
         if not slots:
             return await message.reply("لا يوجد لديك تنصيبات لحذفها.")
         elif len(slots) == 1:
-            # حذف مباشر
             slot = slots[0]
             process_key = f"{user_id}_{slot}"
             if process_key in running_bots:
@@ -273,10 +269,35 @@ async def handle_texts(client: Client, message: Message):
             state["step"] = "WAITING_SLOT_MANAGE"
             return await message.reply("لديك أكثر من تنصيب. أدخل رقم التنصيب الذي تريد إدارته (1 أو 2 مثلاً):")
 
-    # ================= 3. أزرار التحكم بالمطور (الخاصة بالأعضاء) =================
+    # ================= 3. أزرار التحكم بالمطور =================
 
     elif text == "إدارة بوتات الأعضاء" and user_id == ADMIN_ID:
         return await message.reply("إدارة الأعضاء:", reply_markup=admin_users_menu())
+
+    elif text == "الإحصائيات والتقرير" and user_id == ADMIN_ID:
+        total_users = len(db["users"])
+        active_installations = 0
+        
+        # حساب التنصيبات النشطة بدقة متناهية من الملفات
+        if os.path.exists("hostings"):
+            for uid in os.listdir("hostings"):
+                user_path = os.path.join("hostings", uid)
+                if os.path.isdir(user_path):
+                    for slot_dir in os.listdir(user_path):
+                        if slot_dir.startswith("slot_"):
+                            active_installations += 1
+                            
+        total, used, free = shutil.disk_usage("/")
+        disk_percent = (used / total) * 100
+        
+        report = (
+            "📊 **تقرير الإحصائيات المفصل:**\n\n"
+            f"👥 **المستخدمين المسجلين:** `{total_users}`\n"
+            f"🤖 **إجمالي التنصيبات (الملفات/البوتات):** `{active_installations}`\n"
+            f"⚡ **البوتات التي تعمل حالياً:** `{len(running_bots)}`\n"
+            f"💾 **استهلاك مساحة التخزين:** `{disk_percent:.1f}%`"
+        )
+        return await message.reply(report)
 
     elif text in ["حذف تنصيب عضو", "إيقاف مؤقت لعضو", "تشغيل لعضو"] and user_id == ADMIN_ID:
         state["step"] = "ADMIN_WAITING_USER_ID"
@@ -301,7 +322,7 @@ async def handle_texts(client: Client, message: Message):
         save_db(db)
         return await message.reply("🔓 تم فتح التنصيب للجميع.")
 
-    # ================= 4. أزرار قسم الإدارة (بعد تحديد الرقم) =================
+    # ================= 4. أزرار قسم الإدارة =================
 
     elif text in ["سجل البوت", "حالة البوت", "إيقاف مؤقت", "تشغيل البوت", "⌨️ إدخال بيانات"]:
         slot = state.get("selected_slot")
@@ -388,45 +409,54 @@ async def handle_docs(client: Client, message: Message):
     user_id = message.from_user.id
     state = user_states.get(user_id, {})
     
-    if state and state.get("step") == "WAITING_FOR_ZIP" and message.document.file_name.endswith(".zip"):
-        slot = state.get("slot")
-        msg = await message.reply("جاري سحب الملفات والتحميل...")
+    if state and state.get("step") == "WAITING_FOR_ZIP":
+        file_name = message.document.file_name
         
-        bot_dir = f"hostings/{user_id}/slot_{slot}/bot"
-        os.makedirs(bot_dir, exist_ok=True)
-        zip_path = f"{bot_dir}/bot.zip"
-        
-        await message.download(file_name=zip_path)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(bot_dir)
-        os.remove(zip_path)
-        
-        script_path = find_main_script(bot_dir)
-        if not script_path:
-            shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
-            user_states[user_id]["step"] = None
-            return await msg.edit_text("فشل: لم يتم العثور على ملف py أو php للتشغيل.")
+        if file_name.endswith(".zip") or file_name.endswith(".py") or file_name.endswith(".php"):
+            slot = state.get("slot")
+            msg = await message.reply("جاري سحب الملفات والتحميل...")
             
-        is_python = script_path.endswith(".py")
-        script_name = os.path.basename(script_path)
-        script_dir = os.path.dirname(script_path)
-        
-        auto_install_requirements(bot_dir, script_path, is_python)
-        
-        extracted_files = [f for r, d, files in os.walk(bot_dir) for f in files if not f.startswith('.')]
-        is_dropper = (len(extracted_files) == 1)
+            bot_dir = f"hostings/{user_id}/slot_{slot}/bot"
+            os.makedirs(bot_dir, exist_ok=True)
+            
+            if file_name.endswith(".zip"):
+                zip_path = f"{bot_dir}/bot.zip"
+                await message.download(file_name=zip_path)
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(bot_dir)
+                os.remove(zip_path)
+            else:
+                # إذا كان ملف py أو php مفرد
+                await message.download(file_name=f"{bot_dir}/{file_name}")
+            
+            script_path = find_main_script(bot_dir)
+            if not script_path:
+                shutil.rmtree(f"hostings/{user_id}/slot_{slot}", ignore_errors=True)
+                user_states[user_id]["step"] = None
+                return await msg.edit_text("فشل: لم يتم العثور على ملف py أو php للتشغيل.")
+                
+            is_python = script_path.endswith(".py")
+            script_name = os.path.basename(script_path)
+            script_dir = os.path.dirname(script_path)
+            
+            auto_install_requirements(bot_dir, script_path, is_python)
+            
+            extracted_files = [f for r, d, files in os.walk(bot_dir) for f in files if not f.startswith('.')]
+            is_dropper = (len(extracted_files) == 1)
 
-        cmd = "python3" if is_python else "php"
-        process = subprocess.Popen([cmd, script_name], cwd=script_dir, stdin=subprocess.PIPE, stdout=open(f"hostings/{user_id}/slot_{slot}/log.txt", "w"), stderr=subprocess.STDOUT)
-        running_bots[f"{user_id}_{slot}"] = process
-        
-        if is_dropper:
-            await msg.edit_text("تم استلام ملف سحابي. جاري سحب الملفات، يرجى الانتظار...")
-            await asyncio.sleep(6)
-            await message.reply(f"✅ تم التنصيب والتشغيل. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
-        else:
-            await msg.edit_text(f"✅ تم تنصيب البوت بنجاح. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
+            cmd = "python3" if is_python else "php"
+            process = subprocess.Popen([cmd, script_name], cwd=script_dir, stdin=subprocess.PIPE, stdout=open(f"hostings/{user_id}/slot_{slot}/log.txt", "w"), stderr=subprocess.STDOUT)
+            running_bots[f"{user_id}_{slot}"] = process
             
-        user_states[user_id]["step"] = None
+            if is_dropper:
+                await msg.edit_text("تم استلام ملف سحابي / مفرد. جاري التهيئة، يرجى الانتظار...")
+                await asyncio.sleep(6)
+                await message.reply(f"✅ تم التنصيب والتشغيل. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
+            else:
+                await msg.edit_text(f"✅ تم تنصيب البوت بنجاح. (رقم التنصيب: {slot})", reply_markup=main_menu(user_id))
+                
+            user_states[user_id]["step"] = None
+        else:
+            await message.reply("❌ يرجى إرسال ملف بصيغة .zip أو .py أو .php فقط.")
 
 app.run()
