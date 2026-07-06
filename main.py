@@ -101,7 +101,7 @@ def main_menu(user_id):
         btns.append([KeyboardButton("إدارة بوتك"), KeyboardButton("إدارة بوتات الأعضاء")])
         btns.append([KeyboardButton("قفل التنصيب"), KeyboardButton("تشغيل التنصيب")])
         btns.append([KeyboardButton("جلب نسخة احتياطية"), KeyboardButton("رفع نسخة احتياطية")])
-        btns.append([KeyboardButton("الإحصائيات والتقرير")])
+        btns.append([KeyboardButton("الإحصائيات والتقرير"), KeyboardButton("المنصبين")])
     else:
         btns.append([KeyboardButton("قسم الإدارة")])
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
@@ -109,7 +109,7 @@ def main_menu(user_id):
 def manage_menu():
     return ReplyKeyboardMarkup([
         [KeyboardButton("سجل البوت"), KeyboardButton("حالة البوت")],
-        [KeyboardButton("إيقاف مؤقت"), KeyboardButton("تشغيل البوت")],
+        [KeyboardButton("إيقاف مؤقت"), KeyboardButton("تشغيل البوت"), KeyboardButton("🔄 إعادة تشغيل")],
         [KeyboardButton("⌨️ إدخال بيانات"), KeyboardButton("📂 إدارة الملفات")],
         [KeyboardButton("رجوع")]
     ], resize_keyboard=True)
@@ -117,8 +117,9 @@ def manage_menu():
 def file_manage_menu():
     return ReplyKeyboardMarkup([
         [KeyboardButton("📄 عرض الملفات"), KeyboardButton("📁 دخول مجلد")],
-        [KeyboardButton("🔄 تبديل ملف"), KeyboardButton("🗑 حذف ملف")],
-        [KeyboardButton("🔙 المجلد السابق"), KeyboardButton("الرجوع لإدارة البوت")]
+        [KeyboardButton("➕ إضافة ملف"), KeyboardButton("🔄 تبديل ملف"), KeyboardButton("🗑 حذف ملف")],
+        [KeyboardButton("🔄 إعادة تشغيل"), KeyboardButton("🔙 المجلد السابق")],
+        [KeyboardButton("الرجوع لإدارة البوت")]
     ], resize_keyboard=True)
 
 def admin_users_menu():
@@ -261,7 +262,7 @@ async def handle_texts(client: Client, message: Message):
         await check_disk_space(client)
         if db.get("locked", False) and user_id != ADMIN_ID:
             btn = InlineKeyboardMarkup([[InlineKeyboardButton("المطور", url=f"tg://user?id={ADMIN_ID}")]])
-            return await message.reply("عذراً، لا يمكن تنصيب البوت حالياً، يرجى مراسلة المطور.", reply_markup=btn)
+            return await message.reply("🔒 عذراً، تم قفل التنصيب حالياً بواسطة المطور. يرجى مراسلته.", reply_markup=btn)
             
         limit = get_user_limit(user_id)
         slots = get_active_slots(user_id)
@@ -303,6 +304,33 @@ async def handle_texts(client: Client, message: Message):
             return await message.reply("أدخل رقم التنصيب الذي تريد إدارته:")
 
     # ================= 3. أزرار التحكم بالمطور والنسخ الاحتياطي =================
+
+    elif text == "المنصبين" and user_id == ADMIN_ID:
+        if not os.path.exists("hostings") or not os.listdir("hostings"):
+            return await message.reply("لا يوجد أي تنصيبات حالياً.")
+            
+        msg = "📋 **قائمة المنصبين:**\n\n"
+        count = 1
+        for uid in os.listdir("hostings"):
+            user_path = os.path.join("hostings", uid)
+            if os.path.isdir(user_path):
+                for slot_dir in os.listdir(user_path):
+                    if slot_dir.startswith("slot_"):
+                        slot_num = slot_dir.split("_")[1]
+                        bot_dir = f"{user_path}/{slot_dir}/bot"
+                        script_path = find_main_script(bot_dir)
+                        file_name = os.path.basename(script_path) if script_path else "غير معروف"
+                        
+                        msg += f"**{count}-**\n"
+                        msg += f"👤 **الآيدي:** `{uid}`\n"
+                        msg += f"📦 **رقم التنصيب:** `{slot_num}`\n"
+                        msg += f"📄 **الملف الرئيسي:** `{file_name}`\n"
+                        msg += "──────────────\n"
+                        count += 1
+                        
+        if count == 1:
+            return await message.reply("لا يوجد أي تنصيبات حالياً.")
+        return await message.reply(msg)
 
     elif text == "جلب نسخة احتياطية" and user_id == ADMIN_ID:
         msg = await message.reply("⏳ جاري تحضير النسخة الاحتياطية (قاعدة البيانات + جميع ملفات البوتات)...")
@@ -377,7 +405,7 @@ async def handle_texts(client: Client, message: Message):
 
     # ================= 4. أزرار قسم الإدارة (البوت والملفات) =================
 
-    elif text in ["سجل البوت", "حالة البوت", "إيقاف مؤقت", "تشغيل البوت", "⌨️ إدخال بيانات", "📂 إدارة الملفات"]:
+    elif text in ["سجل البوت", "حالة البوت", "إيقاف مؤقت", "تشغيل البوت", "⌨️ إدخال بيانات", "📂 إدارة الملفات", "🔄 إعادة تشغيل"]:
         slot = state.get("selected_slot")
         target_id = state.get("target_id", user_id)
         if not slot:
@@ -419,6 +447,23 @@ async def handle_texts(client: Client, message: Message):
             else:
                 return await message.reply("لم يتم العثور على ملف py للتشغيل.")
 
+        elif text == "🔄 إعادة تشغيل":
+            if process_key in running_bots:
+                try:
+                    running_bots[process_key].terminate()
+                except:
+                    pass
+                del running_bots[process_key]
+                
+            script_path = find_main_script(bot_dir)
+            if script_path:
+                auto_install_requirements(bot_dir, script_path)
+                p = subprocess.Popen(["python3", os.path.basename(script_path)], cwd=os.path.dirname(script_path), stdin=subprocess.PIPE, stdout=open(f"{user_dir}/log.txt", "a"), stderr=subprocess.STDOUT)
+                running_bots[process_key] = p
+                return await message.reply("✅ تم إعادة تشغيل البوت بنجاح.")
+            else:
+                return await message.reply("❌ لم يتم العثور على ملف التشغيل.")
+
         elif text == "⌨️ إدخال بيانات":
             if process_key in running_bots and running_bots[process_key].poll() is None:
                 state["step"] = "WAITING_INPUT"
@@ -432,7 +477,7 @@ async def handle_texts(client: Client, message: Message):
 
     # ================= 5. أزرار إدارة الملفات =================
 
-    elif text in ["📄 عرض الملفات", "📁 دخول مجلد", "🔄 تبديل ملف", "🗑 حذف ملف", "🔙 المجلد السابق"]:
+    elif text in ["📄 عرض الملفات", "📁 دخول مجلد", "➕ إضافة ملف", "🔄 تبديل ملف", "🗑 حذف ملف", "🔙 المجلد السابق"]:
         current_dir = state.get("current_dir")
         if not current_dir or not os.path.exists(current_dir):
             return await message.reply("الرجاء الدخول لإدارة الملفات أولاً.", reply_markup=manage_menu())
@@ -467,6 +512,10 @@ async def handle_texts(client: Client, message: Message):
         elif text == "🗑 حذف ملف":
             state["step"] = "WAITING_DELETE_FILE_NAME"
             return await message.reply("أدخل اسم الملف أو المجلد الذي تريد حذفه (بما في ذلك الصيغة):")
+
+        elif text == "➕ إضافة ملف":
+            state["step"] = "WAITING_ADD_FILE"
+            return await message.reply("أرسل الملف الجديد الآن.\nسيتم حفظه بنفس اسمه في المجلد الحالي.")
 
         elif text == "🔄 تبديل ملف":
             state["step"] = "WAITING_REPLACE_FILE"
@@ -519,14 +568,11 @@ async def handle_docs(client: Client, message: Message):
             msg = await message.reply("⏳ جاري رفع واستخراج النسخة الاحتياطية...")
             
             for key, p in running_bots.items():
-                try:
-                    p.terminate()
-                except:
-                    pass
+                try: p.terminate()
+                except: pass
             running_bots.clear()
             
-            # التعديل هنا: حفظ المسار الفعلي للملف المحمل
-            downloaded_path = await message.download(file_name="uploaded_backup.zip")
+            downloaded_path = await message.download()
             
             try:
                 with zipfile.ZipFile(downloaded_path, 'r') as zip_ref:
@@ -556,6 +602,22 @@ async def handle_docs(client: Client, message: Message):
             await message.reply("❌ يرجى إرسال ملف بصيغة .zip فقط.")
         return
 
+    # --- إضافة ملف جديد ---
+    if step == "WAITING_ADD_FILE":
+        current_dir = state.get("current_dir")
+        if not current_dir or not os.path.exists(current_dir):
+            state["step"] = None
+            return await message.reply("❌ حدث خطأ، يرجى الدخول للمجلد مرة أخرى.")
+            
+        target_path = os.path.join(current_dir, file_name)
+        msg = await message.reply(f"⏳ جاري حفظ الملف `{file_name}`...")
+        
+        downloaded = await message.download()
+        shutil.move(downloaded, target_path)
+        
+        state["step"] = None
+        return await msg.edit_text(f"✅ تم إضافة الملف `{file_name}` بنجاح.\nاضغط '🔄 إعادة تشغيل' لتطبيق التغييرات إذا لزم الأمر.")
+
     # --- تبديل ملف عبر إدارة الملفات ---
     if step == "WAITING_REPLACE_FILE":
         current_dir = state.get("current_dir")
@@ -563,9 +625,12 @@ async def handle_docs(client: Client, message: Message):
         
         if os.path.exists(target_path) and os.path.isfile(target_path):
             os.remove(target_path)
-            await message.download(file_name=target_path)
+            
+            downloaded = await message.download()
+            shutil.move(downloaded, target_path)
+            
             state["step"] = None
-            return await message.reply(f"✅ تم تبديل وتحديث الملف `{file_name}` بنجاح.")
+            return await message.reply(f"✅ تم تبديل وتحديث الملف `{file_name}` بنجاح.\nلا تنسَ عمل '🔄 إعادة تشغيل' للبوت.")
         else:
             state["step"] = None
             return await message.reply(f"❌ خطأ: لا يوجد ملف باسم `{file_name}` في المجلد الحالي لتبديله. يجب أن يحمل نفس الاسم بالضبط.")
@@ -573,7 +638,7 @@ async def handle_docs(client: Client, message: Message):
     # --- تنصيب بوت جديد ---
     elif step == "WAITING_FOR_ZIP":
         if not (file_name.endswith(".zip") or file_name.endswith(".py")):
-            return await message.reply("❌ غير مسموح. يتم قبول ملفات `.zip` أو `.py` فقط.\nأي ملفات أخرى (مثل php وغيرها) تم رفضها للحفاظ على المساحة.")
+            return await message.reply("❌ غير مسموح. يتم قبول ملفات `.zip` أو `.py` فقط.\nأي ملفات أخرى تم رفضها للحفاظ على المساحة.")
 
         slot = state.get("slot")
         msg = await message.reply("جاري سحب الملفات والتحميل...")
@@ -581,14 +646,14 @@ async def handle_docs(client: Client, message: Message):
         bot_dir = f"hostings/{user_id}/slot_{slot}/bot"
         os.makedirs(bot_dir, exist_ok=True)
         
+        downloaded = await message.download()
+        
         if file_name.endswith(".zip"):
-            zip_path = f"{bot_dir}/bot.zip"
-            await message.download(file_name=zip_path)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            with zipfile.ZipFile(downloaded, 'r') as zip_ref:
                 zip_ref.extractall(bot_dir)
-            os.remove(zip_path)
+            os.remove(downloaded)
         else:
-            await message.download(file_name=f"{bot_dir}/{file_name}")
+            shutil.move(downloaded, f"{bot_dir}/{file_name}")
         
         script_path = find_main_script(bot_dir)
         if not script_path:
