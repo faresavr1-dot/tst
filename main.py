@@ -10,7 +10,7 @@ from pyrogram import Client, filters
 from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message
 
 # ================= إعدادات البوت =================
-API_ID = 24217199 # ضع الـ API_ID الخاص بك هنا
+API_ID = 24217199  # ضع الـ API_ID الخاص بك هنا
 API_HASH = "11c12a66dbd23da592211771db1bce6b"  # ضع الـ API_HASH هنا
 BOT_TOKEN = "8849723725:AAE-bq0S4D7iPg3Cq9mQWVU99iFWkI_qxmg"  # ضع توكن البوت هنا
 ADMIN_ID = 7532687479  # ضع آيدي المطور (الآيدي الخاص بك) هنا
@@ -525,13 +525,13 @@ async def handle_docs(client: Client, message: Message):
                     pass
             running_bots.clear()
             
-            backup_path = "uploaded_backup.zip"
-            await message.download(file_name=backup_path)
+            # التعديل هنا: حفظ المسار الفعلي للملف المحمل
+            downloaded_path = await message.download(file_name="uploaded_backup.zip")
             
             try:
-                with zipfile.ZipFile(backup_path, 'r') as zip_ref:
+                with zipfile.ZipFile(downloaded_path, 'r') as zip_ref:
                     zip_ref.extractall(".")
-                os.remove(backup_path)
+                os.remove(downloaded_path)
                 
                 restarted_count = 0
                 if os.path.exists("hostings"):
