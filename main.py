@@ -12,7 +12,7 @@ from pyrogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMa
 # ================= إعدادات البوت =================
 API_ID = 24217199  # ضع الـ API_ID الخاص بك هنا
 API_HASH = "11c12a66dbd23da592211771db1bce6b"  # ضع الـ API_HASH هنا
-BOT_TOKEN = "7399940837:AAEHq5LyU0j4ckhN_Y334t0wV2bOipm-t8Q"  # ضع توكن البوت هنا
+BOT_TOKEN = "7399940837:AAGFVUMyG-bZmSygSj-5wP_T0gTuauSngAg"  # ضع توكن البوت هنا
 ADMIN_ID = 7532687479  # ضع آيدي المطور (الآيدي الخاص بك) هنا
 
 app = Client("HostingManager", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
