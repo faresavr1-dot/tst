@@ -70,13 +70,18 @@ def find_main_script(bot_dir):
     return None
 
 def auto_install_requirements(bot_dir, script_path):
-    req_file = os.path.join(os.path.dirname(script_path), "requirements.txt")
-    if not os.path.exists(req_file):
-        req_file = os.path.join(bot_dir, "requirements.txt")
-        
-    if os.path.exists(req_file):
+    # البحث عن ملف requirements.txt في كامل مجلد البوت المرفوع
+    req_file = None
+    for root, dirs, files in os.walk(bot_dir):
+        if "requirements.txt" in files:
+            req_file = os.path.join(root, "requirements.txt")
+            break
+            
+    # لو الملف موجود، يتم تثبيت المكاتب منه فقط
+    if req_file:
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file])
     else:
+        # لو غير موجود، يعمل فحص للكود ويثبت المكاتب تلقائياً لتشغيل البوت
         try:
             with open(script_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
@@ -155,9 +160,16 @@ def main_menu(user_id):
         btns.append([KeyboardButton("قفل التنصيب"), KeyboardButton("تشغيل التنصيب")])
         btns.append([KeyboardButton("جلب نسخة احتياطية"), KeyboardButton("رفع نسخة احتياطية")])
         btns.append([KeyboardButton("الإحصائيات والتقرير"), KeyboardButton("المنصبين")])
+        btns.append([KeyboardButton("تحكم في السيرفر")])
     else:
         btns.append([KeyboardButton("قسم الإدارة")])
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
+
+def server_control_menu():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("إدخال السيرفر"), KeyboardButton("سجل السيرفر")],
+        [KeyboardButton("رجوع")]
+    ], resize_keyboard=True)
 
 def manage_menu():
     return ReplyKeyboardMarkup([
@@ -234,6 +246,29 @@ async def handle_texts(client: Client, message: Message):
         else:
             await message.reply("⚠️ عذراً، البوت لا يعمل لكي يستقبل بيانات.")
         state["step"] = None 
+        return
+
+    # --- أوامر تحكم السيرفر ---
+    if step == "WAITING_SERVER_CMD" and user_id == ADMIN_ID:
+        msg = await message.reply("⏳ جاري إرسال وتنفيذ الأمر في السيرفر...")
+        try:
+            process = await asyncio.create_subprocess_shell(
+                text,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            output = stdout.decode('utf-8', errors='ignore') + stderr.decode('utf-8', errors='ignore')
+            
+            with open("server_log.txt", "w", encoding="utf-8") as f:
+                f.write(output)
+                
+            await msg.edit_text("✅ تم تنفيذ الأمر في السيرفر بنجاح.\nاضغط على 'سجل السيرفر' لعرض النتيجة المخرجة.")
+        except Exception as e:
+            with open("server_log.txt", "w", encoding="utf-8") as f:
+                f.write(str(e))
+            await msg.edit_text("❌ حدث خطأ أثناء تنفيذ الأمر. يمكنك مراجعة السجل.")
+        state["step"] = None
         return
 
     # --- إدارة الملفات (النصوص) ---
@@ -358,6 +393,24 @@ async def handle_texts(client: Client, message: Message):
             return await message.reply("أدخل رقم التنصيب الذي تريد إدارته:")
 
     # ================= 3. أزرار التحكم بالمطور والنسخ الاحتياطي =================
+
+    elif text == "تحكم في السيرفر" and user_id == ADMIN_ID:
+        state["step"] = None
+        return await message.reply("🛠 أهلاً بك في لوحة التحكم المباشرة بالسيرفر:", reply_markup=server_control_menu())
+
+    elif text == "إدخال السيرفر" and user_id == ADMIN_ID:
+        state["step"] = "WAITING_SERVER_CMD"
+        return await message.reply("أرسل الأمر البرمجي الآن لكي يتم تنفيذه في بيئة السيرفر\n(مثال: `pip install pyrogram`):")
+
+    elif text == "سجل السيرفر" and user_id == ADMIN_ID:
+        if os.path.exists("server_log.txt"):
+            with open("server_log.txt", "r", encoding="utf-8", errors="ignore") as f:
+                log_content = f.read()
+            if not log_content.strip():
+                return await message.reply("سجل السيرفر فارغ حالياً.")
+            return await message.reply(f"**سجل السيرفر (آخر المخرجات):**\n```\n{log_content[-4000:]}\n```")
+        else:
+            return await message.reply("لا يوجد سجل للسيرفر حتى الآن. قم بتنفيذ أمر أولاً.")
 
     elif text == "المنصبين" and user_id == ADMIN_ID:
         if not os.path.exists("hostings") or not os.listdir("hostings"):
